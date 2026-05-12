@@ -15,11 +15,11 @@ import (
 
 // Syncer handles two-way synchronization between local filesystem and Mistral libraries
 type Syncer struct {
-	Client       *api.Client
-	Config       models.SyncConfig
-	State        *models.SyncState
-	Actions      []models.SyncAction
-	StartTime    time.Time
+	Client    *api.Client
+	Config    models.SyncConfig
+	State     *models.SyncState
+	Actions   []models.SyncAction
+	StartTime time.Time
 }
 
 // NewSyncer creates a new Syncer instance
@@ -113,14 +113,14 @@ func (s *Syncer) GetResult() models.SyncResult {
 	}
 
 	return models.SyncResult{
-		Actions:     s.Actions,
-		TotalAdded:  counts["add"],
+		Actions:      s.Actions,
+		TotalAdded:   counts["add"],
 		TotalUpdated: counts["update"],
 		TotalDeleted: counts["delete"],
 		TotalSkipped: counts["skip"],
-		TotalErrors: counts["error"],
-		StartTime:   s.StartTime,
-		EndTime:     time.Now(),
+		TotalErrors:  counts["error"],
+		StartTime:    s.StartTime,
+		EndTime:      time.Now(),
 	}
 }
 

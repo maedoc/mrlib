@@ -13,26 +13,26 @@ import (
 
 // Config represents the application configuration
 type Config struct {
-	APIKey          string
-	BaseURL         string
-	Timeout         time.Duration
-	RateLimitDelay  time.Duration
-	MaxRetries      int
-	Verbose         bool
-	Debug           bool
-	Sync            SyncConfig
+	APIKey         string
+	BaseURL        string
+	Timeout        time.Duration
+	RateLimitDelay time.Duration
+	MaxRetries     int
+	Verbose        bool
+	Debug          bool
+	Sync           SyncConfig
 }
 
 // SyncConfig represents sync-specific configuration
 type SyncConfig struct {
 	Direction       string
-	Mode           string
-	BatchSize      int
-	MaxWorkers     int
-	DryRun         bool
-	Force          bool
-	StateFile      string
-	Extensions     []string
+	Mode            string
+	BatchSize       int
+	MaxWorkers      int
+	DryRun          bool
+	Force           bool
+	StateFile       string
+	Extensions      []string
 	ExcludePatterns []string
 	IncludePatterns []string
 }
@@ -47,14 +47,14 @@ func DefaultConfig() *Config {
 		Verbose:        false,
 		Debug:          false,
 		Sync: SyncConfig{
-			Direction:      "both",
-			Mode:          "safe",
-			BatchSize:     10,
-			MaxWorkers:    4,
-			DryRun:        false,
-			Force:         false,
-			StateFile:     ".mistral_sync_state.json",
-			Extensions:    []string{},
+			Direction:       "both",
+			Mode:            "safe",
+			BatchSize:       10,
+			MaxWorkers:      4,
+			DryRun:          false,
+			Force:           false,
+			StateFile:       ".mistral_sync_state.json",
+			Extensions:      []string{},
 			ExcludePatterns: []string{},
 			IncludePatterns: []string{},
 		},

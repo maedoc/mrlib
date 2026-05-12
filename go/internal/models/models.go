@@ -56,16 +56,16 @@ const (
 
 // Library represents a Mistral AI Library
 type Library struct {
-	ID          string     `json:"id"`
-	Name        string     `json:"name"`
-	Description *string    `json:"description,omitempty"`
-	NbDocuments int        `json:"nb_documents"`
-	TotalSize   int        `json:"total_size"`
-	ChunkSize   *int       `json:"chunk_size,omitempty"`
-	OwnerID     *string    `json:"owner_id,omitempty"`
-	OwnerType   *string    `json:"owner_type,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Description *string   `json:"description,omitempty"`
+	NbDocuments int       `json:"nb_documents"`
+	TotalSize   int       `json:"total_size"`
+	ChunkSize   *int      `json:"chunk_size,omitempty"`
+	OwnerID     *string   `json:"owner_id,omitempty"`
+	OwnerType   *string   `json:"owner_type,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // Document represents a Mistral AI Document
@@ -86,15 +86,15 @@ type SyncConfig struct {
 	LocalPath       string        `yaml:"local_path" json:"local_path"`
 	LibraryID       string        `yaml:"library_id" json:"library_id"`
 	Direction       SyncDirection `yaml:"direction" json:"direction"`
-	Mode           SyncMode      `yaml:"mode" json:"mode"`
-	BatchSize      int           `yaml:"batch_size" json:"batch_size"`
-	MaxWorkers     int           `yaml:"max_workers" json:"max_workers"`
-	DryRun         bool          `yaml:"dry_run" json:"dry_run"`
-	Force          bool          `yaml:"force" json:"force"`
-	StateFile      string        `yaml:"state_file" json:"state_file"`
-	Extensions     []string      `yaml:"extensions" json:"extensions"`
-	ExcludePatterns []string    `yaml:"exclude_patterns" json:"exclude_patterns"`
-	IncludePatterns []string    `yaml:"include_patterns" json:"include_patterns"`
+	Mode            SyncMode      `yaml:"mode" json:"mode"`
+	BatchSize       int           `yaml:"batch_size" json:"batch_size"`
+	MaxWorkers      int           `yaml:"max_workers" json:"max_workers"`
+	DryRun          bool          `yaml:"dry_run" json:"dry_run"`
+	Force           bool          `yaml:"force" json:"force"`
+	StateFile       string        `yaml:"state_file" json:"state_file"`
+	Extensions      []string      `yaml:"extensions" json:"extensions"`
+	ExcludePatterns []string      `yaml:"exclude_patterns" json:"exclude_patterns"`
+	IncludePatterns []string      `yaml:"include_patterns" json:"include_patterns"`
 }
 
 // SyncState represents the state of a sync operation
@@ -122,15 +122,15 @@ type SyncResult struct {
 	TotalDeleted int          `json:"total_deleted"`
 	TotalSkipped int          `json:"total_skipped"`
 	TotalErrors  int          `json:"total_errors"`
-	StartTime    time.Time   `json:"start_time"`
-	EndTime      time.Time   `json:"end_time"`
+	StartTime    time.Time    `json:"start_time"`
+	EndTime      time.Time    `json:"end_time"`
 }
 
 // APIError represents an API error response
 type APIError struct {
-	Message    string `json:"message"`
-	Code       string `json:"code,omitempty"`
-	StatusCode int    `json:"status_code,omitempty"`
+	Message    string                 `json:"message"`
+	Code       string                 `json:"code,omitempty"`
+	StatusCode int                    `json:"status_code,omitempty"`
 	Details    map[string]interface{} `json:"details,omitempty"`
 }
 
@@ -146,16 +146,16 @@ type FileInfo struct {
 
 // ListLibrariesResponse represents the API response for listing libraries
 type ListLibrariesResponse struct {
-	Data   []Library `json:"data"`
+	Data    []Library `json:"data"`
 	HasMore bool      `json:"has_more"`
-	Total  int       `json:"total"`
+	Total   int       `json:"total"`
 }
 
 // ListDocumentsResponse represents the API response for listing documents
 type ListDocumentsResponse struct {
-	Data   []Document `json:"data"`
+	Data    []Document `json:"data"`
 	HasMore bool       `json:"has_more"`
-	Total  int        `json:"total"`
+	Total   int        `json:"total"`
 }
 
 // UnmarshalJSON handles custom unmarshaling for Library

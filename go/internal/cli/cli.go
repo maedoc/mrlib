@@ -256,7 +256,7 @@ func runLibrariesList(cmd *cobra.Command, args []string) error {
 	fmt.Printf("% -36s %-20s %-8s %-10s\n", "ID", "Name", "Docs", "Size")
 	fmt.Println(strings.Repeat("-", 80))
 	for _, lib := range libraries {
-		fmt.Printf("% -36s %-20s %-8d %-10s\n", 
+		fmt.Printf("% -36s %-20s %-8d %-10s\n",
 			lib.ID, lib.Name, lib.NbDocuments, formatBytes(lib.TotalSize))
 	}
 
@@ -390,7 +390,7 @@ func runDocumentsList(cmd *cobra.Command, args []string) error {
 	fmt.Printf("% -36s %-20s %-10s %-12s\n", "ID", "Name", "Size", "Status")
 	fmt.Println(strings.Repeat("-", 80))
 	for _, doc := range documents {
-		fmt.Printf("% -36s %-20s %-10s %-12s\n", 
+		fmt.Printf("% -36s %-20s %-10s %-12s\n",
 			doc.ID, doc.Name, formatBytes(doc.Size), doc.ProcessStatus)
 	}
 
@@ -513,16 +513,16 @@ func runSyncOnce(cmd *cobra.Command, args []string) error {
 	}
 
 	config := models.SyncConfig{
-		LocalPath:      args[1],
-		LibraryID:      libraryID,
-		Direction:      models.SyncDirection(direction),
-		Mode:          models.SyncMode(mode),
-		BatchSize:     batchSize,
-		MaxWorkers:    maxWorkers,
-		DryRun:        dryRun,
-		Force:         force,
-		StateFile:     stateFile,
-		Extensions:    extensions,
+		LocalPath:       args[1],
+		LibraryID:       libraryID,
+		Direction:       models.SyncDirection(direction),
+		Mode:            models.SyncMode(mode),
+		BatchSize:       batchSize,
+		MaxWorkers:      maxWorkers,
+		DryRun:          dryRun,
+		Force:           force,
+		StateFile:       stateFile,
+		Extensions:      extensions,
 		ExcludePatterns: exclude,
 		IncludePatterns: include,
 	}

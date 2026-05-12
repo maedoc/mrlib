@@ -17,29 +17,29 @@ import (
 
 // Client represents the Mistral AI API client
 type Client struct {
-	APIKey          string
-	BaseURL         string
-	Timeout         time.Duration
-	RateLimitDelay  time.Duration
-	MaxRetries      int
-	HTTPClient      *http.Client
+	APIKey         string
+	BaseURL        string
+	Timeout        time.Duration
+	RateLimitDelay time.Duration
+	MaxRetries     int
+	HTTPClient     *http.Client
 	// Cache for library name -> ID resolution
-	libraryCache    map[string]string // name -> id
-	libraryCacheTime time.Time        // last cache update
-	cacheTTL        time.Duration     // cache time-to-live
+	libraryCache     map[string]string // name -> id
+	libraryCacheTime time.Time         // last cache update
+	cacheTTL         time.Duration     // cache time-to-live
 }
 
 // NewClient creates a new Mistral API client
 func NewClient(apiKey string, baseURL string, timeout time.Duration, rateLimitDelay time.Duration, maxRetries int) *Client {
 	return &Client{
-		APIKey:          apiKey,
-		BaseURL:         baseURL,
-		Timeout:         timeout,
-		RateLimitDelay:  rateLimitDelay,
-		MaxRetries:      maxRetries,
-		HTTPClient:      &http.Client{Timeout: timeout},
-		libraryCache:    make(map[string]string),
-		cacheTTL:        5 * time.Minute,
+		APIKey:         apiKey,
+		BaseURL:        baseURL,
+		Timeout:        timeout,
+		RateLimitDelay: rateLimitDelay,
+		MaxRetries:     maxRetries,
+		HTTPClient:     &http.Client{Timeout: timeout},
+		libraryCache:   make(map[string]string),
+		cacheTTL:       5 * time.Minute,
 	}
 }
 
