@@ -1,0 +1,25 @@
+# Build and run
+mistral-file-sync
+
+# Go dependencies
+# go.mod
+# go.sum
+
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test files
+# *_test.go
+coverage.txt
+
+
+# Logs
+*.log
+

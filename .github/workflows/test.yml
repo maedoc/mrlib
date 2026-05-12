@@ -1,0 +1,41 @@
+name: Test
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'go/**'
+      - 'Makefile'
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'go/**'
+      - 'Makefile'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install dependencies
+        run: cd go && go mod tidy
+
+      - name: Run tests
+        run: cd go && go test ./...
+
+      - name: Build
+        run: cd go && go build -ldflags="-s -w" -o mrlib ./cmd/main.go
+
+      - name: Verify binary
+        run: |
+          ./go/mrlib --help
+          ./go/mrlib lib --help
+          ./go/mrlib doc --help
+          ./go/mrlib sync --help
