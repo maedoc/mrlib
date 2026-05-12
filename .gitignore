@@ -1,0 +1,31 @@
+# Binaries
+mrlib
+mrlib-*
+
+# Config with secrets
+mrlib.yaml
+mistral-file-sync.yaml
+.mistral-file-sync.yaml
+
+# Local env
+.env
+
+# Sync state
+.mistral_sync_state.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Python (if any)
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Logs
+*.log
