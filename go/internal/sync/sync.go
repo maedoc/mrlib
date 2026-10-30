@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"mistral-file-sync/internal/api"
-	"mistral-file-sync/internal/models"
+	"github.com/maedoc/mrlib/go/internal/api"
+	"github.com/maedoc/mrlib/go/internal/models"
 )
 
 // Syncer handles two-way synchronization between local filesystem and Mistral libraries
@@ -73,7 +73,7 @@ func (s *Syncer) SaveState() error {
 	// Use default state file if not specified
 	stateFile := s.Config.StateFile
 	if stateFile == "" {
-		stateFile = ".mistral_sync_state.json"
+		stateFile = ".mrlib_sync_state.json"
 		s.Config.StateFile = stateFile
 	}
 
@@ -82,25 +82,28 @@ func (s *Syncer) SaveState() error {
 		return err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(stateFile), 0755); err != nil {
-		return err
+	if dir := filepath.Dir(stateFile); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return err
+		}
 	}
 
-	return os.WriteFile(stateFile, data, 0644)
+	return os.WriteFile(stateFile, data, 0600)
 }
 
 // AddAction adds a sync action to the log
 func (s *Syncer) AddAction(actionType string, path string, documentID *string, err error) {
-	errStr := ""
+	var errStr *string
 	if err != nil {
-		errStr = err.Error()
+		msg := err.Error()
+		errStr = &msg
 	}
 	action := models.SyncAction{
 		ActionType: actionType,
 		Path:       path,
 		DocumentID: documentID,
 		Timestamp:  time.Now(),
-		Error:      &errStr,
+		Error:      errStr,
 	}
 	s.Actions = append(s.Actions, action)
 }
@@ -131,7 +134,10 @@ func (s *Syncer) MatchesFilter(path string) bool {
 		ext := strings.ToLower(filepath.Ext(path))
 		found := false
 		for _, e := range s.Config.Extensions {
-			if strings.ToLower(e) == ext {
+			if strings.HasPrefix(e, ".") {
+				e = e[1:]
+			}
+			if strings.ToLower(e) == strings.TrimPrefix(ext, ".") {
 				found = true
 				break
 			}
@@ -143,6 +149,9 @@ func (s *Syncer) MatchesFilter(path string) bool {
 
 	// Check exclude patterns
 	for _, pattern := range s.Config.ExcludePatterns {
+		if matched, _ := filepath.Match(pattern, filepath.Base(path)); matched {
+			return false
+		}
 		if strings.Contains(path, pattern) {
 			return false
 		}
@@ -151,6 +160,9 @@ func (s *Syncer) MatchesFilter(path string) bool {
 	// Check include patterns
 	if len(s.Config.IncludePatterns) > 0 {
 		for _, pattern := range s.Config.IncludePatterns {
+			if matched, _ := filepath.Match(pattern, filepath.Base(path)); matched {
+				return true
+			}
 			if strings.Contains(path, pattern) {
 				return true
 			}
@@ -161,11 +173,16 @@ func (s *Syncer) MatchesFilter(path string) bool {
 	return true
 }
 
-// GetLocalFiles returns a map of local files
+// GetLocalFiles returns a map of local files keyed by path relative to the sync root
 func (s *Syncer) GetLocalFiles() (map[string]models.FileInfo, error) {
 	files := make(map[string]models.FileInfo)
 
-	err := filepath.Walk(s.Config.LocalPath, func(path string, info fs.FileInfo, err error) error {
+	root, err := filepath.Abs(s.Config.LocalPath)
+	if err != nil {
+		return nil, err
+	}
+
+	err = filepath.Walk(root, func(path string, info fs.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -178,10 +195,14 @@ func (s *Syncer) GetLocalFiles() (map[string]models.FileInfo, error) {
 			return nil
 		}
 
-		relPath, _ := filepath.Rel(s.Config.LocalPath, path)
+		relPath, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		relPath = filepath.ToSlash(relPath)
 		files[relPath] = models.FileInfo{
 			Path:      path,
-			Name:      info.Name(),
+			Name:      relPath,
 			Size:      info.Size(),
 			ModTime:   info.ModTime(),
 			IsDir:     false,
@@ -214,10 +235,11 @@ func (s *Syncer) SyncOnce() (models.SyncResult, error) {
 		return models.SyncResult{}, fmt.Errorf("failed to get remote documents: %v", err)
 	}
 
-	// Build remote file map
+	// Build remote file map keyed by relative path (documents may use
+	// subdirectory names such as "a/b.pdf")
 	remoteFiles := make(map[string]models.Document)
 	for _, doc := range remoteDocs {
-		remoteFiles[doc.Name] = doc
+		remoteFiles[filepath.ToSlash(doc.Name)] = doc
 	}
 
 	// Perform sync based on direction and mode
@@ -230,9 +252,11 @@ func (s *Syncer) SyncOnce() (models.SyncResult, error) {
 		s.syncDown(localFiles, remoteFiles)
 	}
 
-	// Save state
-	if err := s.SaveState(); err != nil {
-		fmt.Printf("Warning: failed to save state: %v\n", err)
+	// Save state (skip in dry-run mode)
+	if !s.Config.DryRun {
+		if err := s.SaveState(); err != nil {
+			fmt.Printf("Warning: failed to save state: %v\n", err)
+		}
 	}
 
 	return s.GetResult(), nil
@@ -241,10 +265,13 @@ func (s *Syncer) SyncOnce() (models.SyncResult, error) {
 // syncUp synchronizes local files to remote
 func (s *Syncer) syncUp(localFiles map[string]models.FileInfo, remoteFiles map[string]models.Document) {
 	for path, localFile := range localFiles {
-		if remoteDoc, exists := remoteFiles[localFile.Name]; exists {
+		if remoteDoc, exists := remoteFiles[path]; exists {
 			// File exists on both sides - check if needs update
 			if s.shouldUpdate(localFile, remoteDoc) {
-				// Upload updated file
+				if s.Config.DryRun {
+					s.AddAction("update", path, &remoteDoc.ID, nil)
+					continue
+				}
 				if _, err := s.Client.UploadDocument(s.Config.LibraryID, localFile.Path); err != nil {
 					s.AddAction("error", path, nil, err)
 				} else {
@@ -255,6 +282,10 @@ func (s *Syncer) syncUp(localFiles map[string]models.FileInfo, remoteFiles map[s
 			}
 		} else {
 			// File only exists locally - upload it
+			if s.Config.DryRun {
+				s.AddAction("add", path, nil, nil)
+				continue
+			}
 			if doc, err := s.Client.UploadDocument(s.Config.LibraryID, localFile.Path); err != nil {
 				s.AddAction("error", path, nil, err)
 			} else {
@@ -264,18 +295,18 @@ func (s *Syncer) syncUp(localFiles map[string]models.FileInfo, remoteFiles map[s
 	}
 
 	// Handle deletions based on mode
-	if s.Config.Mode == models.SyncModeMirror || s.Config.Mode == models.SyncModeSafe {
+	if s.Config.Mode == models.SyncModeMirror {
 		for name, remoteDoc := range remoteFiles {
 			if _, exists := localFiles[name]; !exists {
 				// File only exists remotely
-				if s.Config.Mode == models.SyncModeMirror {
-					if err := s.Client.DeleteDocument(s.Config.LibraryID, remoteDoc.ID); err != nil {
-						s.AddAction("error", name, &remoteDoc.ID, err)
-					} else {
-						s.AddAction("delete", name, &remoteDoc.ID, nil)
-					}
+				if s.Config.DryRun {
+					s.AddAction("delete", name, &remoteDoc.ID, nil)
+					continue
+				}
+				if err := s.Client.DeleteDocument(s.Config.LibraryID, remoteDoc.ID); err != nil {
+					s.AddAction("error", name, &remoteDoc.ID, err)
 				} else {
-					s.AddAction("skip", name, &remoteDoc.ID, nil)
+					s.AddAction("delete", name, &remoteDoc.ID, nil)
 				}
 			}
 		}
@@ -285,11 +316,18 @@ func (s *Syncer) syncUp(localFiles map[string]models.FileInfo, remoteFiles map[s
 // syncDown synchronizes remote files to local
 func (s *Syncer) syncDown(localFiles map[string]models.FileInfo, remoteFiles map[string]models.Document) {
 	for name, remoteDoc := range remoteFiles {
+		outputPath, err := api.SafeJoin(s.Config.LocalPath, name)
+		if err != nil {
+			s.AddAction("error", name, &remoteDoc.ID, err)
+			continue
+		}
 		if localFile, exists := localFiles[name]; exists {
 			// File exists on both sides - check if needs update
 			if s.shouldUpdate(localFile, remoteDoc) {
-				// Download updated file
-				outputPath := filepath.Join(s.Config.LocalPath, name)
+				if s.Config.DryRun {
+					s.AddAction("update", name, &remoteDoc.ID, nil)
+					continue
+				}
 				if err := s.Client.DownloadDocument(s.Config.LibraryID, remoteDoc.ID, outputPath); err != nil {
 					s.AddAction("error", name, &remoteDoc.ID, err)
 				} else {
@@ -300,7 +338,10 @@ func (s *Syncer) syncDown(localFiles map[string]models.FileInfo, remoteFiles map
 			}
 		} else {
 			// File only exists remotely - download it
-			outputPath := filepath.Join(s.Config.LocalPath, name)
+			if s.Config.DryRun {
+				s.AddAction("add", name, &remoteDoc.ID, nil)
+				continue
+			}
 			if err := s.Client.DownloadDocument(s.Config.LibraryID, remoteDoc.ID, outputPath); err != nil {
 				s.AddAction("error", name, &remoteDoc.ID, err)
 			} else {
@@ -310,18 +351,18 @@ func (s *Syncer) syncDown(localFiles map[string]models.FileInfo, remoteFiles map
 	}
 
 	// Handle deletions based on mode
-	if s.Config.Mode == models.SyncModeMirror || s.Config.Mode == models.SyncModeSafe {
+	if s.Config.Mode == models.SyncModeMirror {
 		for path := range localFiles {
 			if _, exists := remoteFiles[path]; !exists {
 				// File only exists locally
-				if s.Config.Mode == models.SyncModeMirror {
-					if err := os.Remove(filepath.Join(s.Config.LocalPath, path)); err != nil {
-						s.AddAction("error", path, nil, err)
-					} else {
-						s.AddAction("delete", path, nil, nil)
-					}
+				if s.Config.DryRun {
+					s.AddAction("delete", path, nil, nil)
+					continue
+				}
+				if err := os.Remove(filepath.Join(s.Config.LocalPath, path)); err != nil {
+					s.AddAction("error", path, nil, err)
 				} else {
-					s.AddAction("skip", path, nil, nil)
+					s.AddAction("delete", path, nil, nil)
 				}
 			}
 		}
@@ -335,8 +376,13 @@ func (s *Syncer) shouldUpdate(localFile models.FileInfo, remoteDoc models.Docume
 		return true
 	}
 
+	remoteTime := remoteDoc.UpdatedAt
+	if remoteTime.IsZero() {
+		remoteTime = remoteDoc.CreatedAt
+	}
+
 	// Compare timestamps
-	return localFile.ModTime.After(remoteDoc.CreatedAt)
+	return localFile.ModTime.After(remoteTime)
 }
 
 // GetStatus returns the current sync status
@@ -369,12 +415,12 @@ func (s *Syncer) CompareLocalAndRemote() (*SyncComparison, error) {
 	// Build remote file map
 	remoteMap := make(map[string]models.Document)
 	for _, doc := range remoteDocs {
-		remoteMap[doc.Name] = doc
+		remoteMap[filepath.ToSlash(doc.Name)] = doc
 	}
 
 	// Compare
 	for path, localFile := range localFiles {
-		if remoteDoc, exists := remoteMap[localFile.Name]; exists {
+		if remoteDoc, exists := remoteMap[path]; exists {
 			if s.shouldUpdate(localFile, remoteDoc) {
 				comparison.Modified = append(comparison.Modified, path)
 			} else {

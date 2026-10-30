@@ -1,9 +1,14 @@
 # Go Build Script
 
-.PHONY: all build test clean
+.PHONY: all build test clean install
 
 # Binary name
 BINARY = mrlib
+
+# Version (override with: make build VERSION=v1.2.3)
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+
+LDFLAGS = -s -w -X github.com/maedoc/mrlib/go/internal/cli.version=$(VERSION)
 
 # Go parameters
 GOOS ?= $(shell go env GOOS)
@@ -12,8 +17,8 @@ GOARCH ?= $(shell go env GOARCH)
 all: build
 
 build: go/build
-	@echo "Building for ${GOOS}/${GOARCH}..."
-	cd go && go build -ldflags="-s -w" -o ../$(BINARY) ./cmd/main.go
+	@echo "Building for ${GOOS}/${GOARCH} (version $(VERSION))..."
+	cd go && GOOS=$(GOOS) GOARCH=$(GOARCH) go build -ldflags="$(LDFLAGS)" -o ../$(BINARY) ./cmd/mrlib
 	@echo "Binary created: $(BINARY)"
 
 go/build:
@@ -49,8 +54,9 @@ clean:
 	cd go && go clean
 
 # Cross-compile all
-cross-compile: build-linux build-mac build-mac-arm64 build-windows
+cross-compile: build-all
 
-# Install
-install: build
-	mv $(BINARY) /usr/local/bin/$(BINARY)
+# Install locally: install via the Go module proxy into GOBIN
+install:
+	GOBIN=$(shell go env GOPATH)/bin go install github.com/maedoc/mrlib/go/cmd/mrlib@latest
+	@echo "Installed to $(shell go env GOPATH)/bin/mrlib"

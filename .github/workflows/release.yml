@@ -17,6 +17,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: linux
@@ -42,12 +43,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
-          go-version: '1.22'
+          go-version: '1.25'
 
       - name: Tidy modules
         run: cd go && go mod tidy
@@ -55,13 +56,19 @@ jobs:
       - name: Vet
         run: cd go && go vet ./...
 
+      - name: Run tests
+        run: cd go && go test ./...
+
       - name: Build
         run: |
           cd go
-          GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build -ldflags="-s -w" -o ../${{ matrix.binary_name }} ./cmd/main.go
+          VERSION="${GITHUB_REF_NAME:-dev}"
+          GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build \
+            -ldflags="-s -w -X github.com/maedoc/mrlib/go/internal/cli.version=${VERSION}" \
+            -o ../${{ matrix.binary_name }} ./cmd/mrlib
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mrlib-${{ matrix.target }}
           path: ${{ matrix.binary_name }}
@@ -70,12 +77,14 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           pattern: mrlib-*
@@ -84,11 +93,10 @@ jobs:
       - name: Generate checksums
         run: |
           cd artifacts
-          sha256sum * > ../SHA256SUMS
-          mv ../SHA256SUMS .
+          sha256sum * > SHA256SUMS
 
       - name: Create release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
@@ -96,6 +104,20 @@ jobs:
             ## mrlib ${{ github.ref_name }}
 
             Mistral AI Libraries CLI with two-way file synchronization.
+
+            ### Install
+
+            One-liner (binary from this release):
+
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/maedoc/mrlib/master/install.sh | sh
+            ```
+
+            Or with the Go toolchain (no release needed):
+
+            ```bash
+            go install github.com/maedoc/mrlib/go/cmd/mrlib@latest
+            ```
 
             ### Assets
             - **Linux (x86_64)**: `mrlib-linux-amd64`
@@ -110,5 +132,3 @@ jobs:
             ```
           files: |
             artifacts/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

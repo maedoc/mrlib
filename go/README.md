@@ -4,11 +4,23 @@ A fast, standalone Go CLI for managing Mistral AI Libraries and Documents with t
 
 ## Installation
 
+### One-liner install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/maedoc/mrlib/master/install.sh | sh
+```
+
+### Go install (module path)
+
+```bash
+go install github.com/maedoc/mrlib/go/cmd/mrlib@latest
+```
+
 ### Build from Source
 
 ```bash
 cd go
-go build -o mrlib ./cmd/main.go
+go build -o mrlib ./cmd
 ```
 
 The binary will be created at `mrlib`.
@@ -23,16 +35,16 @@ make build
 
 ```bash
 # Linux
-GOOS=linux GOARCH=amd64 go build -o mrlib-linux ./cmd/main.go
+GOOS=linux GOARCH=amd64 go build -o mrlib-linux ./cmd
 
 # macOS (Intel)
-GOOS=darwin GOARCH=amd64 go build -o mrlib-mac ./cmd/main.go
+GOOS=darwin GOARCH=amd64 go build -o mrlib-mac ./cmd
 
 # macOS (Apple Silicon)
-GOOS=darwin GOARCH=arm64 go build -o mrlib-mac-arm64 ./cmd/main.go
+GOOS=darwin GOARCH=arm64 go build -o mrlib-mac-arm64 ./cmd
 
 # Windows
-GOOS=windows GOARCH=amd64 go build -o mrlib.exe ./cmd/main.go
+GOOS=windows GOARCH=amd64 go build -o mrlib.exe ./cmd
 ```
 
 ## Quick Start
@@ -109,11 +121,11 @@ mrlib sync status
 - `--include`: Patterns to include
 - `--batch-size`: Batch size for uploads (default: 10)
 - `--max-workers`: Maximum parallel workers (default: 4)
-- `--state-file`: Path to sync state file (default: `.mistral_sync_state.json`)
+- `--state-file`: Path to sync state file (default: `.mrlib_sync_state.json`)
 
 ## Configuration
 
-Create a `mrlib.yaml` file:
+Create a `mrlib.yaml` file (searched in `.`, `$HOME`, `$HOME/.config/mrlib/`, `/etc/mrlib/`):
 
 ```yaml
 api_key: YOUR_API_KEY
@@ -213,7 +225,7 @@ go/
 
 ## Requirements
 
-- Go 1.19+
+- Go 1.23+
 
 ## License
 

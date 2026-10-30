@@ -4,6 +4,20 @@ Fast, standalone Go CLI for managing Mistral AI Libraries and Documents with two
 
 ## Installation
 
+One-liner (downloads the prebuilt binary for your OS/arch from the latest GitHub release):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/maedoc/mrlib/master/install.sh | sh
+```
+
+With the Go toolchain installed (no release needed, always latest master):
+
+```bash
+go install github.com/maedoc/mrlib/go/cmd/mrlib@latest
+```
+
+From source:
+
 ```bash
 git clone git@github.com:maedoc/mrlib.git
 cd mrlib
@@ -14,7 +28,7 @@ Or build manually:
 
 ```bash
 cd go
-go build -o mrlib ./cmd/main.go
+go build -o mrlib ./cmd
 ```
 
 ## Quick Start
@@ -63,7 +77,7 @@ export MISTRAL_API_KEY=your_key
 export MISTRAL_BASE_URL=https://api.mistral.ai/v1
 ```
 
-Or create a `mrlib.yaml`:
+Or create a `mrlib.yaml` (searched in `.`, `$HOME`, `$HOME/.config/mrlib/`, `/etc/mrlib/`):
 
 ```yaml
 api_key: YOUR_API_KEY
@@ -99,7 +113,7 @@ timeout: 120
 
 ## Requirements
 
-- Go 1.19+
+- Go 1.23+ (build from source / `go install`)
 
 ## License
 

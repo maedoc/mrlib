@@ -3,6 +3,8 @@ package models
 
 import (
 	"encoding/json"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -70,15 +72,55 @@ type Library struct {
 
 // Document represents a Mistral AI Document
 type Document struct {
-	ID            string         `json:"id"`
-	LibraryID     string         `json:"library_id"`
-	Name          string         `json:"name"`
-	Extension     *string        `json:"extension,omitempty"`
-	MimeType      *string        `json:"mime_type,omitempty"`
-	Size          int            `json:"size"`
-	Hash          string         `json:"hash"`
-	ProcessStatus DocumentStatus `json:"process_status"`
-	CreatedAt     time.Time      `json:"created_at"`
+	ID               string    `json:"id"`
+	LibraryID        string    `json:"library_id"`
+	Name             string    `json:"name"`
+	Extension        *string   `json:"extension,omitempty"`
+	MimeType         *string   `json:"mime_type,omitempty"`
+	Size             int64     `json:"size"`
+	Hash             *string   `json:"hash,omitempty"`
+	ProcessStatus    string    `json:"process_status,omitempty"`
+	ProcessingStatus string    `json:"processing_status,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at,omitempty"`
+}
+
+// flexInt unmarshals a JSON number or a numeric string into an int64.
+// The Libraries API has returned both encodings for fields such as
+// nb_documents, total_size and size.
+type flexInt int64
+
+// UnmarshalJSON accepts either a JSON number or a quoted number
+func (f *flexInt) UnmarshalJSON(data []byte) error {
+	s := strings.Trim(string(data), `"`)
+	if s == "" || s == "null" {
+		*f = 0
+		return nil
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return err
+	}
+	*f = flexInt(n)
+	return nil
+}
+
+// flexTime unmarshals RFC3339 timestamps, tolerating empty/null values
+type flexTime time.Time
+
+// UnmarshalJSON accepts an RFC3339 string or null
+func (f *flexTime) UnmarshalJSON(data []byte) error {
+	s := strings.Trim(string(data), `"`)
+	if s == "" || s == "null" {
+		*f = flexTime(time.Time{})
+		return nil
+	}
+	t, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		return err
+	}
+	*f = flexTime(t)
+	return nil
 }
 
 // SyncConfig represents configuration for two-way sync
@@ -165,41 +207,88 @@ func (l *Library) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
-	// Extract fields
-	if id, ok := raw["id"]; ok {
-		if err := json.Unmarshal(id, &l.ID); err != nil {
-			return err
+	getString := func(key string) (string, error) {
+		v, ok := raw[key]
+		if !ok {
+			return "", nil
 		}
-	}
-	if name, ok := raw["name"]; ok {
-		if err := json.Unmarshal(name, &l.Name); err != nil {
-			return err
+		var s string
+		if err := json.Unmarshal(v, &s); err != nil {
+			return "", err
 		}
+		return s, nil
 	}
-	if desc, ok := raw["description"]; ok {
-		var d string
-		if err := json.Unmarshal(desc, &d); err == nil {
-			l.Description = &d
+	getOptString := func(key string) (*string, error) {
+		v, ok := raw[key]
+		if !ok || string(v) == "null" {
+			return nil, nil
 		}
-	}
-	if nbDocs, ok := raw["nb_documents"]; ok {
-		if err := json.Unmarshal(nbDocs, &l.NbDocuments); err != nil {
-			return err
+		var s string
+		if err := json.Unmarshal(v, &s); err != nil {
+			return nil, nil
 		}
+		return &s, nil
 	}
-	if totalSize, ok := raw["total_size"]; ok {
-		if err := json.Unmarshal(totalSize, &l.TotalSize); err != nil {
-			return err
+	getInt := func(key string) (int64, error) {
+		v, ok := raw[key]
+		if !ok || string(v) == "null" {
+			return 0, nil
 		}
-	}
-	if createdAt, ok := raw["created_at"]; ok {
-		if err := json.Unmarshal(createdAt, &l.CreatedAt); err != nil {
-			return err
+		var f flexInt
+		if err := json.Unmarshal(v, &f); err != nil {
+			return 0, err
 		}
+		return int64(f), nil
 	}
-	if updatedAt, ok := raw["updated_at"]; ok {
-		if err := json.Unmarshal(updatedAt, &l.UpdatedAt); err != nil {
-			return err
+	getTime := func(key string) (time.Time, error) {
+		v, ok := raw[key]
+		if !ok || string(v) == "null" {
+			return time.Time{}, nil
+		}
+		var f flexTime
+		if err := json.Unmarshal(v, &f); err != nil {
+			return time.Time{}, err
+		}
+		return time.Time(f), nil
+	}
+
+	var err error
+	if l.ID, err = getString("id"); err != nil {
+		return err
+	}
+	if l.Name, err = getString("name"); err != nil {
+		return err
+	}
+	if l.Description, err = getOptString("description"); err != nil {
+		return err
+	}
+	var nb int64
+	if nb, err = getInt("nb_documents"); err != nil {
+		return err
+	}
+	l.NbDocuments = int(nb)
+	var size int64
+	if size, err = getInt("total_size"); err != nil {
+		return err
+	}
+	l.TotalSize = int(size)
+	if l.CreatedAt, err = getTime("created_at"); err != nil {
+		return err
+	}
+	if l.UpdatedAt, err = getTime("updated_at"); err != nil {
+		return err
+	}
+	if l.OwnerID, err = getOptString("owner_id"); err != nil {
+		return err
+	}
+	if l.OwnerType, err = getOptString("owner_type"); err != nil {
+		return err
+	}
+	if v, ok := raw["chunk_size"]; ok && string(v) != "null" {
+		var f flexInt
+		if err := json.Unmarshal(v, &f); err == nil {
+			n := int(int64(f))
+			l.ChunkSize = &n
 		}
 	}
 
@@ -213,36 +302,86 @@ func (d *Document) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
-	// Extract fields
-	if id, ok := raw["id"]; ok {
-		if err := json.Unmarshal(id, &d.ID); err != nil {
-			return err
+	getString := func(key string) (string, error) {
+		v, ok := raw[key]
+		if !ok {
+			return "", nil
 		}
+		var s string
+		if err := json.Unmarshal(v, &s); err != nil {
+			return "", err
+		}
+		return s, nil
 	}
-	if libId, ok := raw["library_id"]; ok {
-		if err := json.Unmarshal(libId, &d.LibraryID); err != nil {
-			return err
+	getOptString := func(key string) (*string, error) {
+		v, ok := raw[key]
+		if !ok || string(v) == "null" {
+			return nil, nil
 		}
+		var s string
+		if err := json.Unmarshal(v, &s); err != nil {
+			return nil, nil
+		}
+		return &s, nil
 	}
-	if name, ok := raw["name"]; ok {
-		if err := json.Unmarshal(name, &d.Name); err != nil {
-			return err
+	getInt := func(key string) (int64, error) {
+		v, ok := raw[key]
+		if !ok || string(v) == "null" {
+			return 0, nil
 		}
+		var f flexInt
+		if err := json.Unmarshal(v, &f); err != nil {
+			return 0, err
+		}
+		return int64(f), nil
 	}
-	if size, ok := raw["size"]; ok {
-		if err := json.Unmarshal(size, &d.Size); err != nil {
-			return err
+	getTime := func(key string) (time.Time, error) {
+		v, ok := raw[key]
+		if !ok || string(v) == "null" {
+			return time.Time{}, nil
 		}
+		var f flexTime
+		if err := json.Unmarshal(v, &f); err != nil {
+			return time.Time{}, err
+		}
+		return time.Time(f), nil
 	}
-	if hash, ok := raw["hash"]; ok {
-		if err := json.Unmarshal(hash, &d.Hash); err != nil {
-			return err
-		}
+
+	var err error
+	if d.ID, err = getString("id"); err != nil {
+		return err
 	}
-	if createdAt, ok := raw["created_at"]; ok {
-		if err := json.Unmarshal(createdAt, &d.CreatedAt); err != nil {
-			return err
-		}
+	if d.LibraryID, err = getString("library_id"); err != nil {
+		return err
+	}
+	if d.Name, err = getString("name"); err != nil {
+		return err
+	}
+	var size int64
+	if size, err = getInt("size"); err != nil {
+		return err
+	}
+	d.Size = size
+	if d.Hash, err = getOptString("hash"); err != nil {
+		return err
+	}
+	if d.Extension, err = getOptString("extension"); err != nil {
+		return err
+	}
+	if d.MimeType, err = getOptString("mime_type"); err != nil {
+		return err
+	}
+	if d.ProcessStatus, err = getString("process_status"); err != nil {
+		return err
+	}
+	if d.ProcessingStatus, err = getString("processing_status"); err != nil {
+		return err
+	}
+	if d.CreatedAt, err = getTime("created_at"); err != nil {
+		return err
+	}
+	if d.UpdatedAt, err = getTime("updated_at"); err != nil {
+		return err
 	}
 
 	return nil

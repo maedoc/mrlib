@@ -2,17 +2,25 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
-	"mistral-file-sync/internal/models"
+	"github.com/maedoc/mrlib/go/internal/models"
+)
+
+const (
+	maxErrorBodyBytes = 1 << 20
+	maxPageSize       = 100
 )
 
 // Client represents the Mistral AI API client
@@ -33,7 +41,7 @@ type Client struct {
 func NewClient(apiKey string, baseURL string, timeout time.Duration, rateLimitDelay time.Duration, maxRetries int) *Client {
 	return &Client{
 		APIKey:         apiKey,
-		BaseURL:        baseURL,
+		BaseURL:        strings.TrimRight(baseURL, "/"),
 		Timeout:        timeout,
 		RateLimitDelay: rateLimitDelay,
 		MaxRetries:     maxRetries,
@@ -111,11 +119,41 @@ func (c *Client) lookupLibraryID(name string) (string, error) {
 	return "", fmt.Errorf("library not found: %s", name)
 }
 
-// doRequest makes an HTTP request with retries
+// retryable reports whether the response status is worth retrying
+func retryable(statusCode int) bool {
+	return statusCode == http.StatusTooManyRequests ||
+		statusCode == http.StatusInternalServerError ||
+		statusCode == http.StatusBadGateway ||
+		statusCode == http.StatusServiceUnavailable ||
+		statusCode == http.StatusGatewayTimeout
+}
+
+// retryDelay returns how long to wait before the given retry attempt
+func (c *Client) retryDelay(resp *http.Response, attempt int) time.Duration {
+	if resp != nil {
+		if ra := resp.Header.Get("Retry-After"); ra != "" {
+			if secs, err := strconv.Atoi(strings.TrimSpace(ra)); err == nil && secs >= 0 {
+				return time.Duration(secs) * time.Second
+			}
+			if t, err := http.ParseTime(ra); err == nil {
+				if d := time.Until(t); d > 0 {
+					return d
+				}
+			}
+		}
+	}
+	backoff := time.Duration(1<<uint(attempt)) * time.Second
+	if max := 30 * time.Second; backoff > max {
+		backoff = max
+	}
+	return backoff
+}
+
+// doRequest makes an HTTP request with retries.
+// The body reader is replayed on each attempt via req.GetBody.
 func (c *Client) doRequest(method, endpoint string, body io.Reader, headers map[string]string) (*http.Response, error) {
 	url := c.BaseURL + endpoint
 
-	// Add default headers
 	if headers == nil {
 		headers = make(map[string]string)
 	}
@@ -125,9 +163,23 @@ func (c *Client) doRequest(method, endpoint string, body io.Reader, headers map[
 		headers["Content-Type"] = "application/json"
 	}
 
-	req, err := http.NewRequest(method, url, body)
+	var bodyBytes []byte
+	if body != nil {
+		var err error
+		bodyBytes, err = io.ReadAll(body)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	req, err := http.NewRequest(method, url, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
+	}
+	if bodyBytes != nil {
+		req.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(bodyBytes)), nil
+		}
 	}
 
 	for k, v := range headers {
@@ -137,7 +189,15 @@ func (c *Client) doRequest(method, endpoint string, body io.Reader, headers map[
 	var resp *http.Response
 	for attempt := 0; attempt <= c.MaxRetries; attempt++ {
 		if attempt > 0 {
-			time.Sleep(time.Duration(1<<uint(attempt)) * time.Second) // Exponential backoff
+			time.Sleep(c.retryDelay(resp, attempt-1))
+			// Re-create the request body for the retry
+			if req.GetBody != nil {
+				b, err := req.GetBody()
+				if err != nil {
+					return nil, err
+				}
+				req.Body = b
+			}
 		}
 
 		resp, err = c.HTTPClient.Do(req)
@@ -148,21 +208,24 @@ func (c *Client) doRequest(method, endpoint string, body io.Reader, headers map[
 			continue
 		}
 
-		// Check for rate limiting
-		if resp.StatusCode == http.StatusTooManyRequests {
-			if attempt < c.MaxRetries {
-				time.Sleep(c.RateLimitDelay)
-				continue
-			}
-		}
-
-		// Check for authentication errors
 		if resp.StatusCode == http.StatusUnauthorized {
+			io.Copy(io.Discard, io.LimitReader(resp.Body, maxErrorBodyBytes))
+			resp.Body.Close()
 			return nil, fmt.Errorf("authentication failed: %s", resp.Status)
 		}
 
-		// Success or non-retryable error
+		if retryable(resp.StatusCode) && attempt < c.MaxRetries {
+			io.Copy(io.Discard, io.LimitReader(resp.Body, maxErrorBodyBytes))
+			resp.Body.Close()
+			resp = nil
+			continue
+		}
+
 		break
+	}
+
+	if resp == nil {
+		return nil, fmt.Errorf("request failed after %d retries", c.MaxRetries)
 	}
 
 	// Apply rate limit delay
@@ -179,10 +242,8 @@ func (c *Client) handleError(resp *http.Response, context string) error {
 		return nil
 	}
 
-	// For non-success responses, we need to read the body
-	// But we can't read it twice, so we'll read it here and return the error
-	body, readErr := io.ReadAll(resp.Body)
-	defer resp.Body.Close()
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+	resp.Body.Close()
 
 	if readErr != nil {
 		return fmt.Errorf("failed to read error response: %v", readErr)
@@ -198,29 +259,96 @@ func (c *Client) handleError(resp *http.Response, context string) error {
 	return fmt.Errorf("API error (%d): %s - %s", resp.StatusCode, context, string(body))
 }
 
-// ListLibraries lists all libraries
+// listPage is the shared envelope for paginated list responses.
+// The API has used both top-level has_more/total and a pagination object
+// with next_page_token, so both are accepted.
+type listPage struct {
+	Data       json.RawMessage `json:"data"`
+	HasMore    bool            `json:"has_more"`
+	Total      int             `json:"total"`
+	Pagination *struct {
+		HasMore       bool   `json:"has_more"`
+		NextPageToken string `json:"next_page_token"`
+	} `json:"pagination"`
+}
+
+// listAll fetches all pages of a paginated endpoint
+func (c *Client) listAll(endpoint string, pageSize int, decode func(json.RawMessage) error) error {
+	if pageSize <= 0 || pageSize > maxPageSize {
+		pageSize = maxPageSize
+	}
+
+	page := 0
+	pageToken := ""
+	for {
+		sep := "?"
+		if strings.Contains(endpoint, "?") {
+			sep = "&"
+		}
+		pageEndpoint := fmt.Sprintf("%s%spage=%d&page_size=%d", endpoint, sep, page, pageSize)
+		if pageToken != "" {
+			pageEndpoint += "&page_token=" + url.QueryEscape(pageToken)
+		}
+
+		resp, err := c.doRequest("GET", pageEndpoint, nil, nil)
+		if err != nil {
+			return err
+		}
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return c.handleError(resp, "list")
+		}
+
+		var lp listPage
+		decodeErr := json.NewDecoder(resp.Body).Decode(&lp)
+		resp.Body.Close()
+		if decodeErr != nil {
+			return decodeErr
+		}
+		if err := decode(lp.Data); err != nil {
+			return err
+		}
+
+		hasMore := lp.HasMore
+		nextToken := ""
+		if lp.Pagination != nil {
+			if lp.Pagination.HasMore {
+				hasMore = true
+			}
+			nextToken = lp.Pagination.NextPageToken
+		}
+
+		if !hasMore && nextToken == "" {
+			return nil
+		}
+		if nextToken != "" {
+			pageToken = nextToken
+		} else {
+			page++
+		}
+	}
+}
+
+// ListLibraries lists all libraries (following pagination)
 func (c *Client) ListLibraries() ([]models.Library, error) {
-	resp, err := c.doRequest("GET", "/libraries", nil, nil)
+	var libs []models.Library
+	err := c.listAll("/libraries", maxPageSize, func(data json.RawMessage) error {
+		var page []models.Library
+		if err := json.Unmarshal(data, &page); err != nil {
+			return err
+		}
+		libs = append(libs, page...)
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-
-	if err := c.handleError(resp, "list libraries"); err != nil {
-		return nil, err
-	}
-
-	var result models.ListLibrariesResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
-	}
-
-	return result.Data, nil
+	return libs, nil
 }
 
 // GetLibrary gets a specific library by ID
 func (c *Client) GetLibrary(libraryID string) (*models.Library, error) {
-	resp, err := c.doRequest("GET", fmt.Sprintf("/libraries/%s", libraryID), nil, nil)
+	resp, err := c.doRequest("GET", fmt.Sprintf("/libraries/%s", url.PathEscape(libraryID)), nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -278,7 +406,7 @@ func (c *Client) UpdateLibrary(libraryID string, name string, description *strin
 
 	body, _ := json.Marshal(payload)
 
-	resp, err := c.doRequest("PATCH", fmt.Sprintf("/libraries/%s", libraryID), bytes.NewBuffer(body), nil)
+	resp, err := c.doRequest("PATCH", fmt.Sprintf("/libraries/%s", url.PathEscape(libraryID)), bytes.NewBuffer(body), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -298,7 +426,7 @@ func (c *Client) UpdateLibrary(libraryID string, name string, description *strin
 
 // DeleteLibrary deletes a library
 func (c *Client) DeleteLibrary(libraryID string) error {
-	resp, err := c.doRequest("DELETE", fmt.Sprintf("/libraries/%s", libraryID), nil, nil)
+	resp, err := c.doRequest("DELETE", fmt.Sprintf("/libraries/%s", url.PathEscape(libraryID)), nil, nil)
 	if err != nil {
 		return err
 	}
@@ -311,29 +439,27 @@ func (c *Client) DeleteLibrary(libraryID string) error {
 	return c.handleError(resp, "delete library")
 }
 
-// ListDocuments lists all documents in a library
+// ListDocuments lists all documents in a library (following pagination)
 func (c *Client) ListDocuments(libraryID string) ([]models.Document, error) {
-	resp, err := c.doRequest("GET", fmt.Sprintf("/libraries/%s/documents", libraryID), nil, nil)
+	var docs []models.Document
+	endpoint := fmt.Sprintf("/libraries/%s/documents", url.PathEscape(libraryID))
+	err := c.listAll(endpoint, maxPageSize, func(data json.RawMessage) error {
+		var page []models.Document
+		if err := json.Unmarshal(data, &page); err != nil {
+			return err
+		}
+		docs = append(docs, page...)
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-
-	if err := c.handleError(resp, "list documents"); err != nil {
-		return nil, err
-	}
-
-	var result models.ListDocumentsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
-	}
-
-	return result.Data, nil
+	return docs, nil
 }
 
 // GetDocument gets a specific document by ID
 func (c *Client) GetDocument(libraryID string, documentID string) (*models.Document, error) {
-	resp, err := c.doRequest("GET", fmt.Sprintf("/libraries/%s/documents/%s", libraryID, documentID), nil, nil)
+	resp, err := c.doRequest("GET", fmt.Sprintf("/libraries/%s/documents/%s", url.PathEscape(libraryID), url.PathEscape(documentID)), nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -377,7 +503,7 @@ func (c *Client) UploadDocument(libraryID string, filePath string) (*models.Docu
 		return nil, err
 	}
 
-	resp, err := c.doRequest("POST", fmt.Sprintf("/libraries/%s/documents", libraryID), body, map[string]string{
+	resp, err := c.doRequest("POST", fmt.Sprintf("/libraries/%s/documents", url.PathEscape(libraryID)), body, map[string]string{
 		"Content-Type": writer.FormDataContentType(),
 	})
 	if err != nil {
@@ -399,7 +525,7 @@ func (c *Client) UploadDocument(libraryID string, filePath string) (*models.Docu
 
 // DeleteDocument deletes a document from a library
 func (c *Client) DeleteDocument(libraryID string, documentID string) error {
-	resp, err := c.doRequest("DELETE", fmt.Sprintf("/libraries/%s/documents/%s", libraryID, documentID), nil, nil)
+	resp, err := c.doRequest("DELETE", fmt.Sprintf("/libraries/%s/documents/%s", url.PathEscape(libraryID), url.PathEscape(documentID)), nil, nil)
 	if err != nil {
 		return err
 	}
@@ -412,9 +538,14 @@ func (c *Client) DeleteDocument(libraryID string, documentID string) error {
 	return c.handleError(resp, "delete document")
 }
 
+// signedURLResponse is the JSON body returned by the signed-url endpoint
+type signedURLResponse struct {
+	URL string `json:"url"`
+}
+
 // GetSignedURL gets a signed URL for downloading a document
 func (c *Client) GetSignedURL(libraryID string, documentID string) (string, error) {
-	resp, err := c.doRequest("GET", fmt.Sprintf("/libraries/%s/documents/%s/signed-url", libraryID, documentID), nil, nil)
+	resp, err := c.doRequest("GET", fmt.Sprintf("/libraries/%s/documents/%s/signed-url", url.PathEscape(libraryID), url.PathEscape(documentID)), nil, nil)
 	if err != nil {
 		return "", err
 	}
@@ -424,19 +555,61 @@ func (c *Client) GetSignedURL(libraryID string, documentID string) (string, erro
 		return "", err
 	}
 
-	body, _ := io.ReadAll(resp.Body)
-	url := strings.Trim(string(body), "\"\n")
-	return url, nil
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+
+	// The endpoint returns a JSON object {"url": "..."}; accept a bare
+	// JSON string too for compatibility.
+	var sur signedURLResponse
+	if err := json.Unmarshal(body, &sur); err == nil && sur.URL != "" {
+		return sur.URL, nil
+	}
+	var rawURL string
+	if err := json.Unmarshal(body, &rawURL); err == nil && rawURL != "" {
+		return rawURL, nil
+	}
+	return "", fmt.Errorf("could not parse signed URL response: %s", string(body))
 }
 
-// DownloadDocument downloads a document to a file
+// SafeJoin returns the path joined to base, or an error if the result would
+// escape base (path traversal protection for remote-controlled names)
+func SafeJoin(base, name string) (string, error) {
+	clean := filepath.Clean(string(filepath.Separator) + name)
+	joined := filepath.Join(base, clean)
+	if joined != base && !strings.HasPrefix(joined, base+string(filepath.Separator)) {
+		return "", fmt.Errorf("invalid file name: %q", name)
+	}
+	return joined, nil
+}
+
+// DownloadDocument downloads a document to a file.
+// The output is written to a temporary file first and atomically renamed,
+// so a failed download never leaves a partial file behind.
 func (c *Client) DownloadDocument(libraryID string, documentID string, outputPath string) error {
 	signedURL, err := c.GetSignedURL(libraryID, documentID)
 	if err != nil {
 		return err
 	}
 
-	resp, err := http.Get(signedURL)
+	u, err := url.Parse(signedURL)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return fmt.Errorf("refusing to download from non-HTTPS signed URL")
+	}
+
+	dlClient := &http.Client{
+		Timeout: c.Timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if req.URL.Scheme != "https" {
+				return fmt.Errorf("refusing redirect to non-HTTPS URL")
+			}
+			return nil
+		},
+	}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, signedURL, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := dlClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -446,20 +619,26 @@ func (c *Client) DownloadDocument(libraryID string, documentID string, outputPat
 		return fmt.Errorf("failed to download: %s", resp.Status)
 	}
 
-	// Create output directory if needed
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
 		return err
 	}
 
-	outFile, err := os.Create(outputPath)
+	tmp, err := os.CreateTemp(filepath.Dir(outputPath), ".mrlib-dl-*")
 	if err != nil {
 		return err
 	}
-	defer outFile.Close()
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
 
-	if _, err := io.Copy(outFile, resp.Body); err != nil {
+	if _, err := io.Copy(tmp, io.LimitReader(resp.Body, 1<<31)); err != nil {
+		tmp.Close()
 		return err
 	}
-
-	return nil
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, outputPath)
 }
