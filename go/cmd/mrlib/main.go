@@ -1,7 +1,7 @@
 package main
 
 import (
-	"mistral-file-sync/internal/cli"
+	"github.com/maedoc/mrlib/go/internal/cli"
 )
 
 func main() {

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -53,7 +54,7 @@ func DefaultConfig() *Config {
 			MaxWorkers:      4,
 			DryRun:          false,
 			Force:           false,
-			StateFile:       ".mistral_sync_state.json",
+			StateFile:       ".mrlib_sync_state.json",
 			Extensions:      []string{},
 			ExcludePatterns: []string{},
 			IncludePatterns: []string{},
@@ -61,18 +62,43 @@ func DefaultConfig() *Config {
 	}
 }
 
+// expandPath expands a leading $HOME or ~ in a path
+func expandPath(path string) string {
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			if path == "~" {
+				return home
+			}
+			return filepath.Join(home, path[2:])
+		}
+	}
+	if strings.HasPrefix(path, "$HOME") {
+		if home := os.Getenv("HOME"); home != "" {
+			return filepath.Join(home, strings.TrimPrefix(path, "$HOME"))
+		}
+	}
+	return path
+}
+
 // LoadConfig loads configuration from file and environment
 func LoadConfig(configPath string) (*Config, error) {
 	config := DefaultConfig()
 
+	configPath = expandPath(configPath)
+
 	// Set up viper
 	v := viper.New()
-	v.SetConfigName("mistral-file-sync")
+	v.SetConfigName("mrlib")
 	v.SetConfigType("yaml")
 	v.AddConfigPath(".")
-	v.AddConfigPath(filepath.Dir(configPath))
-	v.AddConfigPath("$HOME")
-	v.AddConfigPath("/etc/mistral-file-sync/")
+	if configPath != "" {
+		v.AddConfigPath(filepath.Dir(configPath))
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		v.AddConfigPath(home)
+		v.AddConfigPath(filepath.Join(home, ".config", "mrlib"))
+	}
+	v.AddConfigPath("/etc/mrlib/")
 
 	// Environment variables
 	v.AutomaticEnv()
@@ -95,7 +121,8 @@ func LoadConfig(configPath string) (*Config, error) {
 
 	if err := v.ReadInConfig(); err != nil {
 		// Ignore error if config file doesn't exist
-		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+		var notFound viper.ConfigFileNotFoundError
+		if !errors.As(err, &notFound) {
 			return nil, fmt.Errorf("failed to read config: %v", err)
 		}
 	}
@@ -109,37 +136,50 @@ func LoadConfig(configPath string) (*Config, error) {
 	if apiKey := os.Getenv("MISTRAL_API_KEY"); apiKey != "" {
 		config.APIKey = apiKey
 	}
+	if baseURL := os.Getenv("MISTRAL_BASE_URL"); baseURL != "" {
+		config.BaseURL = baseURL
+	}
 
 	return config, nil
 }
 
-// SaveConfig saves configuration to a file
+// SaveConfig saves configuration to a file with owner-only permissions,
+// since it may contain the API key
 func SaveConfig(config *Config, path string) error {
 	data, err := yaml.Marshal(config)
 	if err != nil {
 		return err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return err
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			return err
+		}
 	}
 
-	return os.WriteFile(path, data, 0644)
+	return os.WriteFile(path, data, 0600)
 }
 
 // GetConfigPath returns the path to the config file
 func GetConfigPath() string {
 	// Check if config exists in current directory
-	if _, err := os.Stat(".mistral-file-sync.yaml"); err == nil {
-		return ".mistral-file-sync.yaml"
+	if _, err := os.Stat("mrlib.yaml"); err == nil {
+		return "mrlib.yaml"
+	}
+	if _, err := os.Stat(".mrlib.yaml"); err == nil {
+		return ".mrlib.yaml"
 	}
 
 	// Check home directory
-	home := os.Getenv("HOME")
-	if home != "" {
-		path := filepath.Join(home, ".mistral-file-sync.yaml")
-		if _, err := os.Stat(path); err == nil {
-			return path
+	if home, err := os.UserHomeDir(); err == nil {
+		for _, p := range []string{
+			filepath.Join(home, "mrlib.yaml"),
+			filepath.Join(home, ".mrlib.yaml"),
+			filepath.Join(home, ".config", "mrlib", "mrlib.yaml"),
+		} {
+			if _, err := os.Stat(p); err == nil {
+				return p
+			}
 		}
 	}
 

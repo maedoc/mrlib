@@ -4,15 +4,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/maedoc/mrlib/go/internal/api"
+	"github.com/maedoc/mrlib/go/internal/config"
+	"github.com/maedoc/mrlib/go/internal/models"
+	"github.com/maedoc/mrlib/go/internal/sync"
 	"github.com/spf13/cobra"
-	"mistral-file-sync/internal/api"
-	"mistral-file-sync/internal/config"
-	"mistral-file-sync/internal/models"
-	"mistral-file-sync/internal/sync"
 )
+
+// version is set at build time via -ldflags "-X .../internal/cli.version=..."
+var version = "dev"
 
 var (
 	configFile string
@@ -23,6 +28,7 @@ var (
 	maxRetries int
 	verbose    bool
 	debug      bool
+	jsonOutput bool
 )
 
 var rootCmd = &cobra.Command{
@@ -37,8 +43,8 @@ Features:
 - Two-way synchronization with multiple modes (mirror, additive, safe)
 - File filtering by extension and patterns
 - Rate limiting and retry logic
-- Progress bars for large operations
 - JSON output for scripting`,
+	Version: version,
 }
 
 var librariesCmd = &cobra.Command{
@@ -69,103 +75,100 @@ func init() {
 	rootCmd.PersistentFlags().IntVar(&maxRetries, "max-retries", 3, "Maximum number of retries")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output")
 	rootCmd.PersistentFlags().BoolVar(&debug, "debug", false, "Debug mode")
+	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
 
 	// Add subcommands
 	rootCmd.AddCommand(librariesCmd, documentsCmd, syncCmd)
 
 	// Libraries subcommands
-	librariesCmd.AddCommand(
-		&cobra.Command{
-			Use:   "list",
-			Short: "List all libraries",
-			RunE:  runLibrariesList,
-		},
-		&cobra.Command{
-			Use:   "get [LIBRARY_ID]",
-			Short: "Get a specific library",
-			Args:  cobra.ExactArgs(1),
-			RunE:  runLibrariesGet,
-		},
-		&cobra.Command{
-			Use:   "create [NAME] --description [DESCRIPTION]",
-			Short: "Create a new library",
-			Args:  cobra.ExactArgs(1),
-			RunE:  runLibrariesCreate,
-		},
-		&cobra.Command{
-			Use:   "update [LIBRARY_ID] [NEW_NAME] --description [DESCRIPTION]",
-			Short: "Update a library",
-			Args:  cobra.RangeArgs(1, 2),
-			RunE:  runLibrariesUpdate,
-		},
-		&cobra.Command{
-			Use:   "delete [LIBRARY_ID] --force",
-			Short: "Delete a library",
-			Args:  cobra.ExactArgs(1),
-			RunE:  runLibrariesDelete,
-		},
-	)
+	libListCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List all libraries",
+		RunE:  runLibrariesList,
+	}
+	libGetCmd := &cobra.Command{
+		Use:   "get [LIBRARY]",
+		Short: "Get a specific library (by ID or name)",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runLibrariesGet,
+	}
+	libCreateCmd := &cobra.Command{
+		Use:   "create [NAME]",
+		Short: "Create a new library",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runLibrariesCreate,
+	}
+	libCreateCmd.Flags().String("description", "", "Library description")
+	libUpdateCmd := &cobra.Command{
+		Use:   "update [LIBRARY] [NEW_NAME]",
+		Short: "Update a library (by ID or name)",
+		Args:  cobra.RangeArgs(1, 2),
+		RunE:  runLibrariesUpdate,
+	}
+	libUpdateCmd.Flags().String("description", "", "Library description")
+	libDeleteCmd := &cobra.Command{
+		Use:   "delete [LIBRARY]",
+		Short: "Delete a library (by ID or name)",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runLibrariesDelete,
+	}
+	libDeleteCmd.Flags().Bool("force", false, "Force delete without confirmation")
+
+	librariesCmd.AddCommand(libListCmd, libGetCmd, libCreateCmd, libUpdateCmd, libDeleteCmd)
 
 	// Documents subcommands
-	documentsCmd.AddCommand(
-		&cobra.Command{
-			Use:   "list [LIBRARY_ID]",
-			Short: "List documents in a library",
-			Args:  cobra.ExactArgs(1),
-			RunE:  runDocumentsList,
-		},
-		&cobra.Command{
-			Use:   "get [LIBRARY_ID] [DOCUMENT_ID]",
-			Short: "Get/download a document",
-			Args:  cobra.ExactArgs(2),
-			RunE:  runDocumentsGet,
-		},
-		&cobra.Command{
-			Use:   "upload [LIBRARY_ID]",
-			Short: "Upload a file to a library",
-			Args:  cobra.ExactArgs(1),
-			RunE:  runDocumentsUpload,
-		},
-		&cobra.Command{
-			Use:   "delete [LIBRARY_ID] [DOCUMENT_ID]",
-			Short: "Delete a document",
-			Args:  cobra.ExactArgs(2),
-			RunE:  runDocumentsDelete,
-		},
-	)
-
-	// Add flags to documents commands after they're created
-	for _, cmd := range documentsCmd.Commands() {
-		switch cmd.Use {
-		case "get [LIBRARY_ID] [DOCUMENT_ID]":
-			cmd.Flags().String("output", "", "Output file path")
-		case "upload [LIBRARY_ID]":
-			cmd.Flags().String("file", "", "File to upload")
-		case "delete [LIBRARY_ID] [DOCUMENT_ID]":
-			cmd.Flags().Bool("force", false, "Force delete without confirmation")
-		}
+	docListCmd := &cobra.Command{
+		Use:   "list [LIBRARY]",
+		Short: "List documents in a library (by ID or name)",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runDocumentsList,
 	}
+	docGetCmd := &cobra.Command{
+		Use:   "get [LIBRARY] [DOCUMENT_ID]",
+		Short: "Get/download a document",
+		Args:  cobra.ExactArgs(2),
+		RunE:  runDocumentsGet,
+	}
+	docGetCmd.Flags().String("output", "", "Output file path")
+	docUploadCmd := &cobra.Command{
+		Use:   "upload [LIBRARY]",
+		Short: "Upload a file to a library (by ID or name)",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runDocumentsUpload,
+	}
+	docUploadCmd.Flags().String("file", "", "File to upload")
+	docUploadCmd.MarkFlagRequired("file")
+	docDeleteCmd := &cobra.Command{
+		Use:   "delete [LIBRARY] [DOCUMENT_ID]",
+		Short: "Delete a document",
+		Args:  cobra.ExactArgs(2),
+		RunE:  runDocumentsDelete,
+	}
+	docDeleteCmd.Flags().Bool("force", false, "Force delete without confirmation")
+
+	documentsCmd.AddCommand(docListCmd, docGetCmd, docUploadCmd, docDeleteCmd)
 
 	// Sync subcommands
-	syncCmd.AddCommand(
-		&cobra.Command{
-			Use:   "once [LIBRARY_ID] [LOCAL_PATH]",
-			Short: "Perform a one-time sync",
-			Args:  cobra.ExactArgs(2),
-			RunE:  runSyncOnce,
-		},
-		&cobra.Command{
-			Use:   "continuous [LIBRARY_ID] [LOCAL_PATH] --interval [SECONDS]",
-			Short: "Run continuous sync",
-			Args:  cobra.ExactArgs(2),
-			RunE:  runSyncContinuous,
-		},
-		&cobra.Command{
-			Use:   "status",
-			Short: "Show sync status",
-			RunE:  runSyncStatus,
-		},
-	)
+	syncOnceCmd := &cobra.Command{
+		Use:   "once [LIBRARY] [LOCAL_PATH]",
+		Short: "Perform a one-time sync",
+		Args:  cobra.ExactArgs(2),
+		RunE:  runSyncOnce,
+	}
+	syncContinuousCmd := &cobra.Command{
+		Use:   "continuous [LIBRARY] [LOCAL_PATH]",
+		Short: "Run continuous sync",
+		Args:  cobra.ExactArgs(2),
+		RunE:  runSyncContinuous,
+	}
+	syncContinuousCmd.Flags().Int("interval", 60, "Sync interval in seconds")
+	syncStatusCmd := &cobra.Command{
+		Use:   "status",
+		Short: "Show sync status",
+		RunE:  runSyncStatus,
+	}
+
+	syncCmd.AddCommand(syncOnceCmd, syncContinuousCmd, syncStatusCmd)
 
 	// Add flags to commands
 	addSyncFlags(syncCmd)
@@ -178,11 +181,10 @@ func addSyncFlags(cmd *cobra.Command) {
 	cmd.PersistentFlags().Int("max-workers", 4, "Maximum parallel workers")
 	cmd.PersistentFlags().Bool("dry-run", false, "Preview changes without applying")
 	cmd.PersistentFlags().Bool("force", false, "Force re-upload even if hash matches")
-	cmd.PersistentFlags().String("state-file", ".mistral_sync_state.json", "Path to sync state file")
+	cmd.PersistentFlags().String("state-file", ".mrlib_sync_state.json", "Path to sync state file")
 	cmd.PersistentFlags().StringSlice("extensions", []string{}, "File extensions to include")
 	cmd.PersistentFlags().StringSlice("exclude", []string{}, "Patterns to exclude")
 	cmd.PersistentFlags().StringSlice("include", []string{}, "Patterns to include")
-	cmd.PersistentFlags().Bool("json", false, "Output in JSON format")
 }
 
 // Execute runs the root command
@@ -211,7 +213,7 @@ func getClient() (*api.Client, error) {
 		cfg.Timeout = time.Duration(timeout) * time.Second
 	}
 	if rateLimit > 0 {
-		cfg.RateLimitDelay = time.Duration(rateLimit) * time.Second
+		cfg.RateLimitDelay = time.Duration(rateLimit * float64(time.Second))
 	}
 	if maxRetries > 0 {
 		cfg.MaxRetries = maxRetries
@@ -247,17 +249,16 @@ func runLibrariesList(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Found %d libraries\n", len(libraries))
 	}
 
-	// Output as table or JSON
-	if jsonOutput, _ := cmd.Flags().GetBool("json"); jsonOutput {
+	if jsonOutput {
 		return json.NewEncoder(os.Stdout).Encode(libraries)
 	}
 
 	// Simple table output
-	fmt.Printf("% -36s %-20s %-8s %-10s\n", "ID", "Name", "Docs", "Size")
+	fmt.Printf("%-38s %-20s %-8s %-10s\n", "ID", "Name", "Docs", "Size")
 	fmt.Println(strings.Repeat("-", 80))
 	for _, lib := range libraries {
-		fmt.Printf("% -36s %-20s %-8d %-10s\n",
-			lib.ID, lib.Name, lib.NbDocuments, formatBytes(lib.TotalSize))
+		fmt.Printf("%-38s %-20s %-8d %-10s\n",
+			lib.ID, lib.Name, lib.NbDocuments, formatBytes(int64(lib.TotalSize)))
 	}
 
 	return nil
@@ -269,12 +270,17 @@ func runLibrariesGet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	library, err := client.GetLibrary(args[0])
+	libraryID, err := client.ResolveLibraryID(args[0])
 	if err != nil {
 		return err
 	}
 
-	if jsonOutput, _ := cmd.Flags().GetBool("json"); jsonOutput {
+	library, err := client.GetLibrary(libraryID)
+	if err != nil {
+		return err
+	}
+
+	if jsonOutput {
 		return json.NewEncoder(os.Stdout).Encode(library)
 	}
 
@@ -284,7 +290,7 @@ func runLibrariesGet(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Description: %s\n", *library.Description)
 	}
 	fmt.Printf("Documents: %d\n", library.NbDocuments)
-	fmt.Printf("Total Size: %s\n", formatBytes(library.TotalSize))
+	fmt.Printf("Total Size: %s\n", formatBytes(int64(library.TotalSize)))
 	fmt.Printf("Created: %s\n", library.CreatedAt.Format("2006-01-02 15:04:05"))
 	fmt.Printf("Updated: %s\n", library.UpdatedAt.Format("2006-01-02 15:04:05"))
 
@@ -303,7 +309,7 @@ func runLibrariesCreate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if jsonOutput, _ := cmd.Flags().GetBool("json"); jsonOutput {
+	if jsonOutput {
 		return json.NewEncoder(os.Stdout).Encode(library)
 	}
 
@@ -317,8 +323,13 @@ func runLibrariesUpdate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	libraryID, err := client.ResolveLibraryID(args[0])
+	if err != nil {
+		return err
+	}
+
 	name := args[0]
-	var description *string = nil
+	var description *string
 	if len(args) > 1 {
 		name = args[1]
 	}
@@ -326,12 +337,12 @@ func runLibrariesUpdate(cmd *cobra.Command, args []string) error {
 		description = &desc
 	}
 
-	library, err := client.UpdateLibrary(args[0], name, description)
+	library, err := client.UpdateLibrary(libraryID, name, description)
 	if err != nil {
 		return err
 	}
 
-	if jsonOutput, _ := cmd.Flags().GetBool("json"); jsonOutput {
+	if jsonOutput {
 		return json.NewEncoder(os.Stdout).Encode(library)
 	}
 
@@ -341,6 +352,11 @@ func runLibrariesUpdate(cmd *cobra.Command, args []string) error {
 
 func runLibrariesDelete(cmd *cobra.Command, args []string) error {
 	client, err := getClient()
+	if err != nil {
+		return err
+	}
+
+	libraryID, err := client.ResolveLibraryID(args[0])
 	if err != nil {
 		return err
 	}
@@ -356,7 +372,7 @@ func runLibrariesDelete(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if err := client.DeleteLibrary(args[0]); err != nil {
+	if err := client.DeleteLibrary(libraryID); err != nil {
 		return err
 	}
 
@@ -383,15 +399,15 @@ func runDocumentsList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if jsonOutput, _ := cmd.Flags().GetBool("json"); jsonOutput {
+	if jsonOutput {
 		return json.NewEncoder(os.Stdout).Encode(documents)
 	}
 
-	fmt.Printf("% -36s %-20s %-10s %-12s\n", "ID", "Name", "Size", "Status")
+	fmt.Printf("%-38s %-20s %-10s %-12s\n", "ID", "Name", "Size", "Status")
 	fmt.Println(strings.Repeat("-", 80))
 	for _, doc := range documents {
-		fmt.Printf("% -36s %-20s %-10s %-12s\n",
-			doc.ID, doc.Name, formatBytes(doc.Size), doc.ProcessStatus)
+		fmt.Printf("%-38s %-20s %-10s %-12s\n",
+			doc.ID, doc.Name, formatBytes(doc.Size), doc.ProcessingStatus)
 	}
 
 	return nil
@@ -435,24 +451,24 @@ func runDocumentsUpload(cmd *cobra.Command, args []string) error {
 	}
 
 	filePath, _ := cmd.Flags().GetString("file")
-	_ = filePath
-
 	if filePath == "" {
-		return fmt.Errorf("file path is required")
+		return fmt.Errorf("file path is required (use --file)")
 	}
 
-	// If filename is specified, we need to handle it differently
-	// For now, just use the filePath
 	doc, err := client.UploadDocument(libraryID, filePath)
 	if err != nil {
 		return err
 	}
 
-	if jsonOutput, _ := cmd.Flags().GetBool("json"); jsonOutput {
+	if jsonOutput {
 		return json.NewEncoder(os.Stdout).Encode(doc)
 	}
 
-	fmt.Printf("Uploaded: %s (ID: %s, Status: %s)\n", doc.Name, doc.ID, doc.ProcessStatus)
+	status := doc.ProcessingStatus
+	if status == "" {
+		status = doc.ProcessStatus
+	}
+	fmt.Printf("Uploaded: %s (ID: %s, Status: %s)\n", doc.Name, doc.ID, status)
 	return nil
 }
 
@@ -512,7 +528,7 @@ func runSyncOnce(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	config := models.SyncConfig{
+	syncConfig := models.SyncConfig{
 		LocalPath:       args[1],
 		LibraryID:       libraryID,
 		Direction:       models.SyncDirection(direction),
@@ -527,25 +543,32 @@ func runSyncOnce(cmd *cobra.Command, args []string) error {
 		IncludePatterns: include,
 	}
 
-	syncer := sync.NewSyncer(client, config)
+	syncer := sync.NewSyncer(client, syncConfig)
 	result, err := syncer.SyncOnce()
 	if err != nil {
 		return err
 	}
 
-	if jsonOutput, _ := cmd.Flags().GetBool("json"); jsonOutput {
+	if jsonOutput {
 		return json.NewEncoder(os.Stdout).Encode(result)
 	}
 
 	// Print summary
+	if dryRun {
+		fmt.Println("Dry run - no changes were applied.")
+	}
 	fmt.Printf("Sync completed in %v\n", result.EndTime.Sub(result.StartTime))
 	fmt.Printf("Added: %d, Updated: %d, Deleted: %d, Skipped: %d, Errors: %d\n",
 		result.TotalAdded, result.TotalUpdated, result.TotalDeleted, result.TotalSkipped, result.TotalErrors)
 
-	if len(result.Actions) > 0 && verbose {
+	if len(result.Actions) > 0 && (verbose || dryRun) {
 		fmt.Println("\nActions:")
 		for _, action := range result.Actions {
-			fmt.Printf("  [%s] %s\n", action.ActionType, action.Path)
+			line := fmt.Sprintf("  [%s] %s", action.ActionType, action.Path)
+			if action.Error != nil && *action.Error != "" {
+				line += " - " + *action.Error
+			}
+			fmt.Println(line)
 		}
 	}
 
@@ -561,11 +584,22 @@ func runSyncContinuous(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Starting continuous sync every %d seconds...\n", interval)
 	fmt.Println("Press Ctrl+C to stop")
 
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+
+	ticker := time.NewTicker(time.Duration(interval) * time.Second)
+	defer ticker.Stop()
+
 	for {
 		if err := runSyncOnce(cmd, args); err != nil {
 			fmt.Printf("Sync error: %v\n", err)
 		}
-		time.Sleep(time.Duration(interval) * time.Second)
+		select {
+		case <-sigCh:
+			fmt.Println("\nStopping continuous sync.")
+			return nil
+		case <-ticker.C:
+		}
 	}
 }
 
@@ -581,7 +615,7 @@ func runSyncStatus(cmd *cobra.Command, args []string) error {
 		stateFile = args[0]
 	}
 	if stateFile == "" {
-		stateFile = ".mistral_sync_state.json"
+		stateFile = ".mrlib_sync_state.json"
 	}
 
 	// Try to load existing state
@@ -622,7 +656,7 @@ func runSyncStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	// JSON output
-	if jsonOutput, _ := cmd.Flags().GetBool("json"); jsonOutput {
+	if jsonOutput {
 		status := map[string]interface{}{
 			"library_id":   state.LibraryID,
 			"library_name": libraryName,
@@ -664,12 +698,12 @@ func runSyncStatus(cmd *cobra.Command, args []string) error {
 
 // Utility functions
 
-func formatBytes(bytes int) string {
+func formatBytes(bytes int64) string {
 	const unit = 1024
 	if bytes < unit {
 		return fmt.Sprintf("%d B", bytes)
 	}
-	div, exp := unit, 0
+	div, exp := int64(unit), 0
 	for n := bytes / unit; n >= unit; n /= unit {
 		div *= unit
 		exp++

@@ -12,6 +12,7 @@ mistral-file-sync.yaml
 
 # Sync state
 .mistral_sync_state.json
+.mrlib_sync_state.json
 
 # OS
 .DS_Store
